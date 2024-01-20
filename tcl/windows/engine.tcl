@@ -27,7 +27,7 @@ proc ::enginewin::listEngines {} {
 proc ::enginewin::onPosChanged { {ids ""}} {
     set position ""
     foreach {id state} [array get ::enginewin::engState] {
-        if {$state ne "run"} { continue }
+        if {$state ni {run autoplay_run}} { continue }
         if {$ids ne "" && $id ni $ids} { continue }
         if {$position eq ""} {
             set position [sc_game UCI_currentPos]
@@ -64,7 +64,7 @@ proc ::enginewin::start { {id ""} {enginename ""} } {
 # Stop the engine.
 # Return true if a StopGo message was sent to the engine.
 proc ::enginewin::stop {id} {
-    if {[winfo exists .engineWin$id] && $::enginewin::engState($id) in "run locked"} {
+    if {[winfo exists .engineWin$id] && $::enginewin::engState($id) in {run autoplay_run locked}} {
         ::engine::send $id StopGo
         return true
     }
@@ -74,7 +74,12 @@ proc ::enginewin::stop {id} {
 # If the engine is running, stop it. Otherwise invoke ::enginewin::start
 # Return the engine's id.
 proc ::enginewin::toggleStartStop { {id ""} {enginename ""} } {
-    if {[::enginewin::stop $id]} {
+    if { $::enginewin::finishGameMode } {
+        set ::enginewin::finishGameMode 0
+        ::enginewin::stop 1
+        ::enginewin::stop 2
+        return $id
+    } elseif {[::enginewin::stop $id]} {
         return $id
     }
     return [::enginewin::start $id $enginename]
@@ -145,6 +150,8 @@ proc ::enginewin::Open { {id ""} {enginename ""} } {
 
     # The engine should be closed before the debug .text is destroyed
     bind $w.config <Destroy> "
+        set ::enginewin::finishGameMode 0
+        ::enginewin::stop $id
         unset ::enginewin::engState($id)
         ::engine::close $id
         unset ::enginewin::engConfig_$id
@@ -162,6 +169,9 @@ proc ::enginewin::Open { {id ""} {enginename ""} } {
     set ::enginewin::position_$id ""
     set ::enginewin::newgame_$id true
     set ::enginewin::startTime_$id [clock milliseconds]
+    if {![winfo exists ::enginewin::finishGameMode]} {
+        set ::enginewin::finishGameMode 0
+    }
 
     if {$enginename eq ""} {
         set enginename $::enginewin_lastengine($id)
@@ -290,6 +300,9 @@ proc ::enginewin::createButtonsBar {id btn display} {
     ttk::spinbox $btn.multipv -increment 1 -width 4 -state disabled \
         -validate key -validatecommand { string is integer %P } \
         -command "after idle \[bind $btn.multipv <FocusOut>\]"
+    ttk::button $btn.finishgame -image tb_finish_off -style Toolbutton \
+        -command "::enginewin::toggleFinishGame $id $btn"
+    ::utils::tooltip::Set $btn.finishgame [tr FinishGame]
     bind $btn.multipv <Return> { {*}[bind %W <FocusOut>] }
     bind $btn.multipv <FocusOut> "::enginewin::changeOption $id multipv $btn.multipv"
     ::utils::tooltip::Set $btn.multipv [tr Lines]
@@ -337,8 +350,8 @@ proc ::enginewin::createButtonsBar {id btn display} {
         -command "::enginewin::changeState $id toggleConfig"
     $btn.config state pressed
     grid $btn.startStop $btn.lock $btn.addbestmove $btn.addbestline \
-         $btn.addlines $btn.multipv $btn.threads $btn.hash $btn.limits x $btn.config -sticky ew
-    grid columnconfigure $btn 9 -weight 1
+        $btn.addlines $btn.finishgame $btn.multipv $btn.threads $btn.hash $btn.limits x $btn.config -sticky ew
+    grid columnconfigure $btn 10 -weight 1
 }
 
 # Sends a SetOptions message to the engine if an option's value is different.
@@ -366,6 +379,11 @@ proc ::enginewin::changeOption {id name widget_or_value} {
 # disconnected -> The engine was open but the connection was terminated.
 # idle -> The engine is open and ready.
 # run -> The engine is analyzing the current position.
+# autoplay_idle -> The engine is playing, and finished analyzing a move.
+# autoplay_run -> The engine is playing, and analyzing the current position.
+# autoplay_gate -> The engine is playing, and the controlling logic is pending on a state change.
+#    Used to prevent race conditions, by guaranteeing detection of key state transitions that
+#    can otherwise be missed due to execution timing.
 # locked -> The engine is analyzing a fixed position.
 proc ::enginewin::changeState {id newState} {
     set w .engineWin$id
@@ -378,6 +396,11 @@ proc ::enginewin::changeState {id newState} {
             grid remove $w.config
         }
         return
+    }
+
+    if {$::enginewin::finishGameMode} {
+        if {$newState eq "idle"} { set newState "autoplay_idle" }
+        if {$newState eq "run"} { set newState "autoplay_run" }
     }
 
     if {$::enginewin::engState($id) eq $newState} { return }
@@ -397,9 +420,11 @@ proc ::enginewin::changeState {id newState} {
     # will be different, only the valid moves will be added to the game.
     lappend btnDisabledStates [list btn.addbestmove [list closed disconnected]]
     lappend btnDisabledStates [list btn.addbestline [list closed disconnected]]
-    lappend btnDisabledStates [list btn.addlines [list closed disconnected]]
-    lappend btnDisabledStates [list btn.startStop [list closed disconnected] [list locked run]]
-    lappend btnDisabledStates [list btn.lock [list closed disconnected idle] locked]
+    lappend btnDisabledStates [list btn.addlines [list closed disconnected autoplay_idle autoplay_run autoplay_gate]]
+    lappend btnDisabledStates [list btn.startStop [list closed disconnected] [list locked run autoplay_idle autoplay_run autoplay_gate]]
+    lappend btnDisabledStates [list btn.lock [list closed disconnected idle autoplay_idle autoplay_run autoplay_gate] locked]
+    lappend btnDisabledStates [list btn.finishgame [list closed disconnected autoplay_idle autoplay_run autoplay_gate]]
+
     foreach {elem} $btnDisabledStates {
         lassign $elem btn states pressed
         if {$newState in $states} {
@@ -415,7 +440,7 @@ proc ::enginewin::changeState {id newState} {
     }
     set ::enginewin::engState($id) $newState
 
-    if {$newState in {closed disconnected idle locked}} {
+    if {$newState in {closed disconnected idle autoplay_idle locked}} {
         ::notify::EngineBestMove $id "" ""
     }
 }
@@ -459,7 +484,13 @@ proc ::enginewin::logHandler {id widget tag prefix msg} {
 
 # If any, closes the connection with the current engine.
 # If "config" is not "" opens a connection with a new engine.
+# If necessary, opens a new enginewin window.
 proc ::enginewin::connectEngine {id enginename} {
+    if {$id eq "" || ![winfo exists .engineWin$id]} {
+        set id [::enginewin::Open $id $enginename]
+        return;
+    }
+
     set configFrame .engineWin$id.config.options
     foreach wchild [winfo children $configFrame] { destroy $wchild }
 
@@ -540,6 +571,11 @@ proc ::enginewin::callback {id msg} {
         "InfoGo" {
             lassign $msgData ::enginewin::position_$id ::enginewin::limits_$id
             ::enginewin::changeState $id run
+        }
+        "InfoBestMove" {
+            if {$::enginewin::finishGameMode} {
+                ::enginewin::changeState $id idle
+            }
         }
         "InfoPV" {
             ::enginewin::updateDisplay $id $msgData
@@ -782,4 +818,226 @@ proc ::enginewin::exportLines {w} {
         incr i_line
     }
     ::notify::GameChanged
+}
+
+################################################################################
+# will ask engine(s) to play the game till the end
+################################################################################
+proc ::enginewin::toggleFinishGame { id btn } {
+    set engine1_available [winfo exists .engineWin1]
+    set engine2_available [winfo exists .engineWin2]
+
+    if {$engine1_available} {
+        ::enginewin::stop 1
+        set config [::enginecfg::get $::enginewin_lastengine(1)]
+        if {$config ne ""} {
+            lassign $config name1 cmd1 args1 wdir1 elo1 time1 url1 uci1 options1
+        } else {
+            set uci1 0
+        }
+        unset config
+        set engine1_available [expr {$engine1_available && $uci1}]
+    }
+
+    if {$engine2_available} {
+        ::enginewin::stop 2
+        set config [::enginecfg::get $::enginewin_lastengine(2)]
+        if {$config ne ""} {
+            lassign $config name2 cmd2 args2 wdir2 elo2 time2 url2 uci2 options2
+        } else {
+            set uci2 0
+        }
+        unset config
+        set engine2_available [expr {$engine2_available && $uci2}]
+    }
+
+    # UCI engines
+    # Default values
+    if {! [info exists ::enginewin::finishGameEng1] } { set ::enginewin::finishGameEng1 1 }
+    if {! [info exists ::enginewin::finishGameEng2] } { set ::enginewin::finishGameEng2 1 }
+    if {! [info exists ::enginewin::finishGameCmd1] } { set ::enginewin::finishGameCmd1 "movetime" }
+    if {! [info exists ::enginewin::finishGameCmdVal1] } { set ::enginewin::finishGameCmdVal1 5 }
+    if {! [info exists ::enginewin::finishGameCmd2] } { set ::enginewin::finishGameCmd2 "movetime" }
+    if {! [info exists ::enginewin::finishGameCmdVal2] } { set ::enginewin::finishGameCmdVal2 5 }
+
+    set w .configFinishGame
+    win::createDialog $w
+    wm resizable $w 0 0
+    ::setTitle $w "Scid: $::tr(FinishGame)"
+
+    ttk::labelframe $w.wh_f -text "$::tr(White)" -padding 5
+    grid $w.wh_f -column 0 -row 0 -columnspan 2 -sticky we -pady 8
+    foreach psize $::boardSizes {
+        if {$psize >= 40} { break }
+    }
+    ttk::label $w.wh_f.p -image wk$psize
+    grid $w.wh_f.p -column 0 -row 0 -rowspan 3
+    if {$engine1_available} {
+        ttk::radiobutton $w.wh_f.e1 -text $name1 -variable ::enginewin::finishGameEng1 -value 1
+    } else {
+        set ::enginewin::finishGameEng1 2
+        ttk::radiobutton $w.wh_f.e1 -text $::tr(StartEngine) -variable ::enginewin::finishGameEng1 -value 1 -state disabled
+    }
+    if {$engine2_available } {
+        ttk::radiobutton $w.wh_f.e2 -text $name2 -variable ::enginewin::finishGameEng1 -value 2
+    } else {
+        set ::enginewin::finishGameEng1 1
+        ttk::radiobutton $w.wh_f.e2 -text $::tr(StartEngine) -variable ::enginewin::finishGameEng1 -value 2 -state disabled
+    }
+    grid $w.wh_f.e1 -column 1 -row 0 -columnspan 3 -sticky w
+    grid $w.wh_f.e2 -column 1 -row 1 -columnspan 3 -sticky w
+    ttk::spinbox $w.wh_f.cv -width 3 -textvariable ::enginewin::finishGameCmdVal1 -from 1 -to 1000 -justify right
+    ttk::radiobutton $w.wh_f.c1 -text $::tr(seconds) -variable ::enginewin::finishGameCmd1 -value "movetime"
+    ttk::radiobutton $w.wh_f.c2 -text $::tr(FixedDepth) -variable ::enginewin::finishGameCmd1 -value "depth"
+    grid $w.wh_f.cv -column 1 -row 2 -sticky w
+    grid $w.wh_f.c1 -column 2 -row 2 -sticky w -padx 6
+    grid $w.wh_f.c2 -column 3 -row 2 -sticky w
+
+    ttk::labelframe $w.bk_f -text "$::tr(Black)" -padding 5
+    grid $w.bk_f -column 0 -row 1 -columnspan 2 -sticky we -pady 8
+    ttk::label $w.bk_f.p -image bk$psize
+    grid $w.bk_f.p -column 0 -row 0 -rowspan 3
+    if {$engine1_available} {
+        ttk::radiobutton $w.bk_f.e1 -text $name1 -variable ::enginewin::finishGameEng2 -value 1
+    } else {
+        set ::enginewin::finishGameEng2 2
+        ttk::radiobutton $w.bk_f.e1 -text $::tr(StartEngine) -variable ::enginewin::finishGameEng2 -value 1 -state disabled
+    }
+    if {$engine2_available } {
+        ttk::radiobutton $w.bk_f.e2 -text $name2 -variable ::enginewin::finishGameEng2 -value 2
+    } else {
+        set ::enginewin::finishGameEng2 1
+        ttk::radiobutton $w.bk_f.e2 -text $::tr(StartEngine) -variable ::enginewin::finishGameEng2 -value 2 -state disabled
+    }
+    grid $w.bk_f.e1 -column 1 -row 0 -columnspan 3 -sticky w
+    grid $w.bk_f.e2 -column 1 -row 1 -columnspan 3 -sticky w
+    ttk::spinbox $w.bk_f.cv -width 3 -textvariable ::enginewin::finishGameCmdVal2 -from 1 -to 1000 -justify right
+    ttk::radiobutton $w.bk_f.c1 -text $::tr(seconds) -variable ::enginewin::finishGameCmd2 -value "movetime"
+    ttk::radiobutton $w.bk_f.c2 -text $::tr(FixedDepth) -variable ::enginewin::finishGameCmd2 -value "depth"
+    grid $w.bk_f.cv -column 1 -row 2 -sticky w
+    grid $w.bk_f.c1 -column 2 -row 2 -sticky w -padx 6
+    grid $w.bk_f.c2 -column 3 -row 2 -sticky w
+
+    ttk::frame $w.fbuttons
+    ttk::button $w.fbuttons.cancel -text $::tr(Cancel) -command {
+        destroy .configFinishGame
+    }
+    ttk::button $w.fbuttons.ok -text "OK" -command {
+        set ::enginewin::finishGameMode 1
+        destroy .configFinishGame
+    }
+    packbuttons right $w.fbuttons.cancel $w.fbuttons.ok
+    grid $w.fbuttons -row 2 -column 1 -columnspan 2 -sticky we
+    focus $w.fbuttons.ok
+    bind $w <Escape> { .configFinishGame.cancel invoke }
+    bind $w <Return> { .configFinishGame.ok invoke }
+
+    ::tk::PlaceWindow $w widget .engineWin$id
+    grab $w
+    bind $w <ButtonPress> {
+        set w .configFinishGame
+        if {%x < 0 || %x > [winfo width $w] || %y < 0 || %y > [winfo height $w] } { ::tk::PlaceWindow $w pointer }
+    }
+    tkwait window $w
+    if {!$::enginewin::finishGameMode} { return }
+
+    if { $::enginewin::finishGameEng1 eq "1" } {
+        set ::enginewin::finishGameEngName1 $name1
+    } else {
+        set ::enginewin::finishGameEngName1 $name2
+    }
+    if { $::enginewin::finishGameEng2 eq "1" } {
+        set ::enginewin::finishGameEngName2 $name1
+    } else {
+        set ::enginewin::finishGameEngName2 $name2
+    }
+    set tmp [sc_pos getComment]
+    sc_pos setComment "$tmp $::tr(FinishGame) $::tr(White): $::enginewin::finishGameEngName1 $::tr(Black): $::enginewin::finishGameEngName2"
+
+    # start white engine
+    set current_engine $::enginewin::finishGameEng1
+    ::enginewin::connectEngine $current_engine $::enginewin::finishGameEngName1
+    set ::enginewin::limits_$current_engine "$::enginewin::finishGameCmd1 $::enginewin::finishGameCmdVal1"
+    if {$::enginewin::finishGameCmd1 == "movetime" } { append ::enginewin::limits_$current_engine "000" }
+    set ::enginewin::finishGameEngPlayer1 "white"
+    set pv_lines1 .engineWin$current_engine.display.pv_lines
+    .engineWin$current_engine.btn.finishgame configure -image tb_finish_on
+    # wait for engine
+    while { $::enginewin::engState($current_engine) ni { idle autoplay_idle } } {
+        vwait ::enginewin::engState($current_engine)
+    }
+
+    # start black engine
+    incr current_engine
+    if {$current_engine > 2} { set current_engine 1 }
+    ::enginewin::connectEngine $current_engine $::enginewin::finishGameEngName2
+    set ::enginewin::limits_$current_engine "$::enginewin::finishGameCmd2 $::enginewin::finishGameCmdVal2"
+    if {$::enginewin::finishGameCmd2 == "movetime" } { append ::enginewin::limits_$current_engine "000" }
+    set ::enginewin::finishGameEngPlayer2 "black"
+    set pv_lines2 .engineWin$current_engine.display.pv_lines
+    .engineWin$current_engine.btn.finishgame configure -image tb_finish_on
+    set ::enginewin::finishGameEng2 $current_engine
+    # wait for engine
+    while { $::enginewin::engState($current_engine) ni { idle autoplay_idle } } {
+        vwait ::enginewin::engState($current_engine)
+    }
+
+    set ::enginewin::finishGameMode 1
+    set moveValid [::enginewin::exportMoves "" 1.0]
+
+    while { [string index [sc_game info previousMove] end] != "#"} {
+        if {[sc_pos side] == "white"} {
+            set current_cmd 1
+            set current_engine $::enginewin::finishGameEng1
+            set current_player $::enginewin::finishGameEngPlayer1
+        } else {
+            set current_cmd 2
+            set current_engine $::enginewin::finishGameEng2
+            set current_player $::enginewin::finishGameEngPlayer2
+        }
+
+        # Transition to gate state to prevent missing run->idle transition.
+        ::enginewin::changeState $current_engine "autoplay_gate"
+        if {!$::enginewin::finishGameMode} { break }
+        if { $::enginewin::engState($current_engine) ne "autoplay_gate"  || $current_player != [sc_pos side] } {
+            ::enginewin::stop $current_engine
+            continue
+        }
+
+        ::enginewin::sendPosition $current_engine [sc_game UCI_currentPos]
+
+        # wait for engine
+        while { $::enginewin::engState($current_engine) in { autoplay_run autoplay_gate } } {
+            if { $current_player != [sc_pos side] } { break }
+            vwait ::enginewin::engState($current_engine)
+            if {!$::enginewin::finishGameMode} { break }
+        }
+
+        # Check for autoplay exit or forced move.
+        if {!$::enginewin::finishGameMode} { break }
+        if { $current_player != [sc_pos side] } {
+            ::enginewin::stop $current_engine
+            continue
+        }
+
+        if { ![::enginewin::exportMoves [ set pv_lines$current_cmd ] 1.0] } { break }
+    }
+
+    set ::enginewin::finishGameMode 0
+
+    if {[winfo exists .engineWin1]} {
+        ::enginewin::stop 1
+        if {$::enginewin::engState(1) in { autoplay_idle autoplay_gate }} {
+            ::enginewin::changeState 1 "idle"
+        }
+        .engineWin1.btn.finishgame configure -image tb_finish_off
+    }
+
+    if {[winfo exists .engineWin2]} {
+        ::enginewin::stop 2
+        if {$::enginewin::engState(2) in { autoplay_idle autoplay_gate }} {
+            ::enginewin::changeState 2 "idle"
+        }
+        .engineWin2.btn.finishgame configure -image tb_finish_off
+    }
 }
