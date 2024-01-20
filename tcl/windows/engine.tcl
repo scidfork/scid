@@ -150,8 +150,11 @@ proc ::enginewin::Open { {id ""} {enginename ""} } {
 
     # The engine should be closed before the debug .text is destroyed
     bind $w.config <Destroy> "
-        set ::enginewin::finishGameMode 0
-        ::enginewin::stop $id
+        if {\$::enginewin::finishGameMode} {
+            set ::enginewin::finishGameMode 0
+            ::enginewin::stop 1
+            ::enginewin::stop 2
+        }
         unset ::enginewin::engState($id)
         ::engine::close $id
         unset ::enginewin::engConfig_$id
