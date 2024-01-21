@@ -973,20 +973,20 @@ proc ::enginewin::toggleFinishGame { id btn } {
             if {!$::enginewin::finishGameMode} { break }
             vwait ::enginewin::engState($current_engine)
         }
+        if {!$::enginewin::finishGameMode} { break }
         set ::enginewin::limits_$current_engine "infinite"
         ::enginewin::sendPosition $current_engine [sc_game UCI_currentPos]
         # Need to make sure the engine is ready to run. Reaching the idle state does not
         # guarantee this due to various commands that may still be in the send queue.
-        while { $::enginewin::engState($current_engine) != "autoplay_run" } {
-            if {!$::enginewin::finishGameMode} { break }
+        while { $::enginewin::engState($current_engine) ni {run autoplay_run} } {
             vwait ::enginewin::engState($current_engine)
         }
         ::enginewin::stop $current_engine
         # wait for engine to stop
-        while { $::enginewin::engState($current_engine) != "autoplay_idle" } {
-            if {!$::enginewin::finishGameMode} { break }
+        while { $::enginewin::engState($current_engine) ni {idle autoplay_idle} } {
             vwait ::enginewin::engState($current_engine)
         }
+        if {!$::enginewin::finishGameMode} { break }
         # queue a new game for both engines for a fair start:
         ::enginewin::changeState $current_engine "autoplay_gate"
         ::engine::send $current_engine NewGame [list analysis post_pv post_wdl [sc_game variant]]
@@ -995,6 +995,7 @@ proc ::enginewin::toggleFinishGame { id btn } {
             if {!$::enginewin::finishGameMode} { break }
             vwait ::enginewin::engState($current_engine)
         }
+        if {!$::enginewin::finishGameMode} { break }
 
         set ::enginewin::limits_$current_engine [concat [set ::enginewin::finishGameCmd$current_cmd] [set ::enginewin::finishGameCmdVal$current_cmd]]
         if {[set ::enginewin::finishGameCmd$current_cmd] == "movetime" } { append ::enginewin::limits_$current_engine "000" }
@@ -1005,9 +1006,8 @@ proc ::enginewin::toggleFinishGame { id btn } {
         if {$current_engine > 2} { set current_engine 1 }
     }
 
-    set ::enginewin::finishGameMode 1
-
     while { [string index [sc_game info previousMove] end] != "#"} {
+        if {!$::enginewin::finishGameMode} { break }
         if {[sc_pos side] == "white"} {
             set current_cmd 1
             set current_engine $::enginewin::finishGameEng1
