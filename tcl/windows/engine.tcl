@@ -1045,6 +1045,7 @@ proc ::enginewin::toggleFinishGame { id btn } {
             ::undoFeature save
             sc_game import [ set ::enginewin::finishGameEngineBestMove$current_engine]
             ::notify::PosChanged -pgn
+            if { $current_player == [sc_pos side] } { break }
         } elseif { ![::enginewin::exportMoves [ set pv_lines$current_cmd ] 1.0] } { break }
     }
 
