@@ -578,6 +578,8 @@ proc ::enginewin::callback {id msg} {
         "InfoBestMove" {
             if {$::enginewin::finishGameMode} {
                 ::enginewin::changeState $id idle
+                set ::enginewin::finishGameEngineDone$id true
+                set ::enginewin::finishGameEngineBestMove$id $msgData
             }
         }
         "InfoPV" {
@@ -1024,6 +1026,7 @@ proc ::enginewin::toggleFinishGame { id btn } {
             continue
         }
 
+        set ::enginewin::finishGameEngineDone$current_engine false
         ::enginewin::sendPosition $current_engine [sc_game UCI_currentPos]
 
         # wait for engine
@@ -1040,7 +1043,14 @@ proc ::enginewin::toggleFinishGame { id btn } {
             continue
         }
 
-        if { ![::enginewin::exportMoves [ set pv_lines$current_cmd ] 1.0] } { break }
+        # Must use the best move returned by the engine, not the best move returned by pv_lines.
+        # Otherwise, engine strength limiting features (UCI_LimitStrength, Level, ect) may not work.
+        # Try getting this info from pv_lines as a backup, if the engine did not send a best move.
+        if { [set ::enginewin::finishGameEngineDone$current_engine] } {
+            ::undoFeature save
+            sc_game import [ set ::enginewin::finishGameEngineBestMove$current_engine]
+            ::notify::PosChanged -pgn
+        } elseif { ![::enginewin::exportMoves [ set pv_lines$current_cmd ] 1.0] } { break }
     }
 
     set ::enginewin::finishGameMode 0
