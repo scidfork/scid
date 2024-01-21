@@ -1020,11 +1020,6 @@ proc ::enginewin::toggleFinishGame { id btn } {
 
         # Transition to gate state to prevent missing run->idle transition.
         ::enginewin::changeState $current_engine "autoplay_gate"
-        if {!$::enginewin::finishGameMode} { break }
-        if { $::enginewin::engState($current_engine) ne "autoplay_gate"  || $current_player != [sc_pos side] } {
-            ::enginewin::stop $current_engine
-            continue
-        }
 
         set ::enginewin::finishGameEngineDone$current_engine false
         ::enginewin::sendPosition $current_engine [sc_game UCI_currentPos]
@@ -1032,8 +1027,8 @@ proc ::enginewin::toggleFinishGame { id btn } {
         # wait for engine
         while { $::enginewin::engState($current_engine) in { autoplay_run autoplay_gate } } {
             if { $current_player != [sc_pos side] } { break }
-            vwait ::enginewin::engState($current_engine)
             if {!$::enginewin::finishGameMode} { break }
+            vwait ::enginewin::engState($current_engine)
         }
 
         # Check for autoplay exit or forced move.
