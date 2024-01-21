@@ -854,7 +854,6 @@ proc ::enginewin::toggleFinishGame { id btn } {
         set engine2_available [expr {$engine2_available && $uci2}]
     }
 
-    # UCI engines
     # Default values
     if {! [info exists ::enginewin::finishGameEng1] } { set ::enginewin::finishGameEng1 1 }
     if {! [info exists ::enginewin::finishGameEng2] } { set ::enginewin::finishGameEng2 1 }
@@ -986,7 +985,6 @@ proc ::enginewin::toggleFinishGame { id btn } {
     }
 
     set ::enginewin::finishGameMode 1
-    set moveValid [::enginewin::exportMoves "" 1.0]
 
     while { [string index [sc_game info previousMove] end] != "#"} {
         if {[sc_pos side] == "white"} {
