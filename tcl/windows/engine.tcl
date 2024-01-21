@@ -953,35 +953,54 @@ proc ::enginewin::toggleFinishGame { id btn } {
     } else {
         set ::enginewin::finishGameEngName2 $name2
     }
+
+    set ::enginewin::finishGameEngPlayer1 "white"
+    set ::enginewin::finishGameEngPlayer2 "black"
+
     set tmp [sc_pos getComment]
     sc_pos setComment "$tmp $::tr(FinishGame) $::tr(White): $::enginewin::finishGameEngName1 $::tr(Black): $::enginewin::finishGameEngName2"
 
-    # start white engine
+    # start engines
     set current_engine $::enginewin::finishGameEng1
-    ::enginewin::connectEngine $current_engine $::enginewin::finishGameEngName1
-    set ::enginewin::limits_$current_engine "$::enginewin::finishGameCmd1 $::enginewin::finishGameCmdVal1"
-    if {$::enginewin::finishGameCmd1 == "movetime" } { append ::enginewin::limits_$current_engine "000" }
-    set ::enginewin::finishGameEngPlayer1 "white"
-    set pv_lines1 .engineWin$current_engine.display.pv_lines
-    .engineWin$current_engine.btn.finishgame configure -image tb_finish_on
-    # wait for engine
-    while { $::enginewin::engState($current_engine) ni { idle autoplay_idle } } {
-        vwait ::enginewin::engState($current_engine)
-    }
+    foreach {current_cmd} {1 2} {
+        ::enginewin::connectEngine $current_engine [set ::enginewin::finishGameEngName$current_cmd]
+        set pv_lines$current_cmd .engineWin$current_engine.display.pv_lines
+        .engineWin$current_engine.btn.finishgame configure -image tb_finish_on
+        # wait for engine
+        while { $::enginewin::engState($current_engine) != "autoplay_idle" } {
+            if {!$::enginewin::finishGameMode} { break }
+            vwait ::enginewin::engState($current_engine)
+        }
+        set ::enginewin::limits_$current_engine "infinite"
+        ::enginewin::sendPosition $current_engine [sc_game UCI_currentPos]
+        # Need to make sure the engine is ready to run. Reaching the idle state does not
+        # guarantee this due to various commands that may still be in the send queue.
+        while { $::enginewin::engState($current_engine) != "autoplay_run" } {
+            if {!$::enginewin::finishGameMode} { break }
+            vwait ::enginewin::engState($current_engine)
+        }
+        ::enginewin::stop $current_engine
+        # wait for engine to stop
+        while { $::enginewin::engState($current_engine) != "autoplay_idle" } {
+            if {!$::enginewin::finishGameMode} { break }
+            vwait ::enginewin::engState($current_engine)
+        }
+        # queue a new game for both engines for a fair start:
+        ::enginewin::changeState $current_engine "autoplay_gate"
+        ::engine::send $current_engine NewGame [list analysis post_pv post_wdl [sc_game variant]]
+        # wait for InfoReady
+        while { $::enginewin::engState($current_engine) != "autoplay_idle" } {
+            if {!$::enginewin::finishGameMode} { break }
+            vwait ::enginewin::engState($current_engine)
+        }
 
-    # start black engine
-    incr current_engine
-    if {$current_engine > 2} { set current_engine 1 }
-    ::enginewin::connectEngine $current_engine $::enginewin::finishGameEngName2
-    set ::enginewin::limits_$current_engine "$::enginewin::finishGameCmd2 $::enginewin::finishGameCmdVal2"
-    if {$::enginewin::finishGameCmd2 == "movetime" } { append ::enginewin::limits_$current_engine "000" }
-    set ::enginewin::finishGameEngPlayer2 "black"
-    set pv_lines2 .engineWin$current_engine.display.pv_lines
-    .engineWin$current_engine.btn.finishgame configure -image tb_finish_on
-    set ::enginewin::finishGameEng2 $current_engine
-    # wait for engine
-    while { $::enginewin::engState($current_engine) ni { idle autoplay_idle } } {
-        vwait ::enginewin::engState($current_engine)
+        set ::enginewin::limits_$current_engine [concat [set ::enginewin::finishGameCmd$current_cmd] [set ::enginewin::finishGameCmdVal$current_cmd]]
+        if {[set ::enginewin::finishGameCmd$current_cmd] == "movetime" } { append ::enginewin::limits_$current_engine "000" }
+
+        set ::enginewin::finishGameEng$current_cmd $current_engine
+
+        incr current_engine
+        if {$current_engine > 2} { set current_engine 1 }
     }
 
     set ::enginewin::finishGameMode 1
