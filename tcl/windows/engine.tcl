@@ -997,6 +997,9 @@ proc ::enginewin::toggleFinishGame { id btn } {
         }
         if {!$::enginewin::finishGameMode} { break }
 
+        # clear the pv lines generated during init.
+        ::enginewin::updateDisplay $current_engine ""
+
         set ::enginewin::limits_$current_engine [concat [set ::enginewin::finishGameCmd$current_cmd] [set ::enginewin::finishGameCmdVal$current_cmd]]
         if {[set ::enginewin::finishGameCmd$current_cmd] == "movetime" } { append ::enginewin::limits_$current_engine "000" }
 
